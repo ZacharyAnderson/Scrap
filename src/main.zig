@@ -73,12 +73,11 @@ fn deleteNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args:
 }
 fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
     _ = main_args;
-    std.debug.print("Finding a note\n", .{});
-    // Need to alter this to search for tags instead
-    var note_name: ?[]const u8 = null;
+
+    var tags_list = std.ArrayList([]const u8).init(gpa);
+    defer tags_list.deinit();
     while (iter.next()) |arg| {
-        std.debug.print("Arg: {s}\n", .{arg});
-        note_name = arg;
+        try tags_list.append(arg);
     }
     const home_dir = try std.process.getEnvVarOwned(gpa, "HOME");
     defer gpa.free(home_dir);
@@ -97,26 +96,72 @@ fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
         },
         .threading_mode = .MultiThread,
     });
-    const query = "SELECT title, note, tags FROM notes WHERE title = ?";
+
+    const query = "SELECT title, tags FROM notes;";
+
     var stmt = try db.prepare(query);
     defer stmt.deinit();
 
-    const row = try stmt.one(
-        struct { title: [128:0]u8, note: [1024:0]u8, tags: [256:0]u8 },
+    const rows = try stmt.all(
+        struct { title: [128:0]u8, tags: [256:0]u8 },
+        gpa,
         .{},
-        .{ .title = note_name },
+        .{},
     );
-    if (row) |r| {
+    defer gpa.free(rows);
+    for (rows) |r| {
         const name_ptr: [*:0]const u8 = &r.title;
-        const note_ptr: [*:0]const u8 = &r.note;
         const tags_ptr: [*:0]const u8 = &r.tags;
-        std.log.debug("name: {s}, note: {s}, tags: {s}", .{ std.mem.span(name_ptr), std.mem.span(note_ptr), std.mem.span(tags_ptr) });
-    }
+        const tags_slice = r.tags[0..];
 
-    std.debug.print("gpa allocator address: {}\n", .{gpa});
+        const tag_length = std.mem.indexOf(u8, tags_slice, "\x00") orelse tags_slice.len;
+        const raw_tags = tags_slice[0..tag_length];
+        var tags_str = raw_tags;
+        if (tags_str.len > 0 and tags_str[0] == '[') {
+            tags_str = tags_str[1..];
+        }
+        if (tags_str.len > 0 and tags_str[tags_str.len - 1] == ']') {
+            tags_str = tags_str[0 .. tags_str.len - 1];
+        }
+
+        var r_tag_list = std.ArrayList([]const u8).init(gpa);
+        defer r_tag_list.deinit();
+
+        var start: usize = 0;
+        while (start <= tags_str.len) {
+            var token_end: usize = start;
+            while (token_end < tags_str.len and tags_str[token_end] != ',') {
+                token_end += 1;
+            }
+            const token = tags_str[start..token_end];
+            const trimmed = std.mem.trim(u8, token, " \"");
+            try r_tag_list.append(trimmed);
+            if (token_end >= tags_str.len) break;
+            start = token_end + 1;
+        }
+
+        var map = std.StringHashMap(bool).init(gpa);
+        defer map.deinit();
+
+        for (r_tag_list.items) |tag| {
+            try map.put(tag, true);
+        }
+        var tag_match: bool = true;
+        for (tags_list.items) |tag| {
+            if (map.get(tag)) |_| {} else {
+                tag_match = false;
+                break;
+            }
+        }
+        if (tag_match) {
+            std.debug.print("name: {s},  tags: {s}\n", .{ std.mem.span(name_ptr), std.mem.span(tags_ptr) });
+        }
+    }
 }
 fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
     _ = main_args;
+
+    const tmp_path = "/tmp/scrap_note.md";
     var note_name: ?[]const u8 = null;
     while (iter.next()) |arg| {
         std.debug.print("Arg: {s}\n", .{arg});
@@ -139,27 +184,27 @@ fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
         },
         .threading_mode = .MultiThread,
     });
-    const query = "SELECT note FROM notes WHERE title = ?";
+    const query = "SELECT id, note FROM notes WHERE title = ?";
     var stmt = try db.prepare(query);
     defer stmt.deinit();
 
     const row = try stmt.oneAlloc(
-        struct { note: []const u8 },
+        struct { id: i32, note: []const u8 },
         gpa,
         .{},
         .{ .title = note_name },
     );
+    var note_id: ?i32 = null;
     if (row) |r| {
+        note_id = r.id;
         defer gpa.free(r.note);
-        // const note_ptr: [*:0]const u8 = &r.note;
-        // const note_slice = std.mem.sliceTo(note_ptr, 0);
-        // std.log.debug("note: {s}", .{std.mem.span(note_ptr)});
-        const tmp_path = "/tmp/scrap_note.md";
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true, .read = true });
         defer file.close();
         try file.writeAll(r.note);
     }
-    const tmp_path = "/tmp/scrap_note.md";
+    const original_file = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
+    const original_note_content = try original_file.readToEndAlloc(gpa, 4096);
+    defer gpa.free(original_note_content);
 
     const editor = std.process.getEnvVarOwned(gpa, "EDITOR") catch "/opt/homebrew/bin/nvim";
     var proc = std.process.Child.init(&[_][]const u8{ editor, tmp_path }, gpa);
@@ -168,7 +213,20 @@ fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
         std.debug.print("Failed to launch editor: {s}, error: {}\n", .{ editor, err });
         return err;
     }
-    std.debug.print("Viewing a note\n", .{});
+    const file = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
+    const contents = try file.readToEndAlloc(gpa, 4096);
+    defer gpa.free(contents);
+    if (!std.mem.eql(u8, contents, original_note_content)) {
+        const update_query =
+            \\UPDATE notes SET note = ?  where id = ?
+        ;
+
+        var update_stmt = try db.prepare(update_query);
+        defer update_stmt.deinit();
+
+        try update_stmt.exec(.{}, .{ contents, note_id });
+    }
+    try std.fs.cwd().deleteFile(tmp_path);
 }
 fn help(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
     _ = main_args;
@@ -279,6 +337,17 @@ fn getDb(gpa: std.mem.Allocator) anyerror!sqlite.Db {
         .threading_mode = .MultiThread,
     });
     return db;
+}
+fn queryForTagCount(tagCount: usize) []const u8 {
+    if (tagCount == 1) {
+        return "SELECT n.title, n.tags FROM notes AS n JOIN json_each(n.tags) AS tag ON tag.value IN (?) GROUP BY n.id, n.title, n.tags HAVING COUNT(DISTINCT tag.value) = 1;";
+    } else if (tagCount == 2) {
+        return "SELECT n.title, n.tags FROM notes AS n JOIN json_each(n.tags) AS tag ON tag.value IN (?, ?) GROUP BY n.id, n.title, n.tags HAVING COUNT(DISTINCT tag.value) = 2;";
+    } else if (tagCount == 3) {
+        return "SELECT n.title, n.tags FROM notes AS n JOIN json_each(n.tags) AS tag ON tag.value IN (?, ?, ?) GROUP BY n.id, n.title, n.tags HAVING COUNT(DISTINCT tag.value) = 3;";
+    } else {
+        return "SELECT n.title, n.tags FROM notes AS n JOIN json_each(n.tags) AS tag ON tag.value IN (?) GROUP BY n.id, n.title, n.tags HAVING COUNT(DISTINCT tag.value) = 1;";
+    }
 }
 const sqlite = @import("sqlite");
 const clap = @import("clap");
