@@ -4,6 +4,7 @@ const SubCommands = enum {
     delete,
     find,
     open,
+    editTag,
     help,
 };
 
@@ -59,6 +60,7 @@ pub fn main() !void {
         .delete => try deleteNote(gpa, &iter, res),
         .find => try findNote(gpa, &iter, res),
         .open => try openNote(gpa, &iter, res),
+        .editTag => try editTag(gpa, &iter, res),
     }
 }
 
@@ -71,6 +73,69 @@ fn deleteNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args:
         std.debug.print("Arg: {s}\n", .{arg});
     }
 }
+
+fn editTag(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
+    _ = main_args;
+    std.debug.print("Editing Tags\n", .{});
+
+    var note_title: ?[]const u8 = null;
+    var new_tag_list = std.ArrayList([]const u8).init(gpa);
+    defer new_tag_list.deinit();
+
+    if (iter.next()) |arg| {
+        note_title = arg;
+    }
+    while (iter.next()) |arg| {
+        try new_tag_list.append(arg);
+    }
+    var db = try getDb(gpa);
+
+    const query = "SELECT id, tags FROM notes WHERE title = ?";
+
+    var stmt = try db.prepare(query);
+    defer stmt.deinit();
+
+    const row = try stmt.one(
+        struct { id: i32, tags: [256:0]u8 },
+        .{},
+        .{ .title = note_title },
+    );
+    var tagSet = std.StringHashMap(void).init(gpa);
+    defer tagSet.deinit();
+    var note_id: ?i32 = null;
+    if (row) |r| {
+        note_id = r.id;
+        const tags_slice = r.tags[0..];
+
+        const r_tag_list = try makeTagList(gpa, tags_slice);
+        defer r_tag_list.deinit();
+        for (r_tag_list.items) |tag| {
+            try tagSet.put(tag, {});
+        }
+    }
+    for (new_tag_list.items) |tag| {
+        try tagSet.put(tag, {});
+    }
+    var tagIter = tagSet.keyIterator();
+    var uniqueTags = std.ArrayList([]const u8).init(gpa);
+    defer uniqueTags.deinit();
+    while (tagIter.next()) |arg| {
+        try uniqueTags.append(arg.*);
+    }
+
+    const serialized_tags = try std.json.stringifyAlloc(gpa, uniqueTags.items, .{});
+    defer gpa.free(serialized_tags);
+
+    const update_query =
+        \\UPDATE notes SET tags = ?  where id = ?
+    ;
+
+    var update_stmt = try db.prepare(update_query);
+    defer update_stmt.deinit();
+
+    try update_stmt.exec(.{}, .{ serialized_tags, note_id });
+}
+
 fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
     _ = main_args;
 
@@ -97,13 +162,13 @@ fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
         .threading_mode = .MultiThread,
     });
 
-    const query = "SELECT title, tags FROM notes;";
+    const query = "SELECT title, tags, updated_at FROM notes;";
 
     var stmt = try db.prepare(query);
     defer stmt.deinit();
 
     const rows = try stmt.all(
-        struct { title: [128:0]u8, tags: [256:0]u8 },
+        struct { title: [128:0]u8, tags: [256:0]u8, update_at: [128:0]u8 },
         gpa,
         .{},
         .{},
@@ -112,33 +177,11 @@ fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
     for (rows) |r| {
         const name_ptr: [*:0]const u8 = &r.title;
         const tags_ptr: [*:0]const u8 = &r.tags;
+        const update_at_ptr: [*:0]const u8 = &r.update_at;
         const tags_slice = r.tags[0..];
 
-        const tag_length = std.mem.indexOf(u8, tags_slice, "\x00") orelse tags_slice.len;
-        const raw_tags = tags_slice[0..tag_length];
-        var tags_str = raw_tags;
-        if (tags_str.len > 0 and tags_str[0] == '[') {
-            tags_str = tags_str[1..];
-        }
-        if (tags_str.len > 0 and tags_str[tags_str.len - 1] == ']') {
-            tags_str = tags_str[0 .. tags_str.len - 1];
-        }
-
-        var r_tag_list = std.ArrayList([]const u8).init(gpa);
+        const r_tag_list = try makeTagList(gpa, tags_slice);
         defer r_tag_list.deinit();
-
-        var start: usize = 0;
-        while (start <= tags_str.len) {
-            var token_end: usize = start;
-            while (token_end < tags_str.len and tags_str[token_end] != ',') {
-                token_end += 1;
-            }
-            const token = tags_str[start..token_end];
-            const trimmed = std.mem.trim(u8, token, " \"");
-            try r_tag_list.append(trimmed);
-            if (token_end >= tags_str.len) break;
-            start = token_end + 1;
-        }
 
         var map = std.StringHashMap(bool).init(gpa);
         defer map.deinit();
@@ -154,7 +197,7 @@ fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
             }
         }
         if (tag_match) {
-            std.debug.print("name: {s},  tags: {s}\n", .{ std.mem.span(name_ptr), std.mem.span(tags_ptr) });
+            std.debug.print("name: {s},  tags: {s}, last_updated: {s}\n", .{ std.mem.span(name_ptr), std.mem.span(tags_ptr), std.mem.span(update_at_ptr) });
         }
     }
 }
@@ -203,7 +246,7 @@ fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
         try file.writeAll(r.note);
     }
     const original_file = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
-    const original_note_content = try original_file.readToEndAlloc(gpa, 4096);
+    const original_note_content = try original_file.readToEndAlloc(gpa, 1048576);
     defer gpa.free(original_note_content);
 
     const editor = std.process.getEnvVarOwned(gpa, "EDITOR") catch "/opt/homebrew/bin/nvim";
@@ -214,7 +257,7 @@ fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
         return err;
     }
     const file = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
-    const contents = try file.readToEndAlloc(gpa, 4096);
+    const contents = try file.readToEndAlloc(gpa, 1048576);
     defer gpa.free(contents);
     if (!std.mem.eql(u8, contents, original_note_content)) {
         const update_query =
@@ -261,10 +304,6 @@ fn addNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: Ma
     };
     defer gpa.free(note_content);
 
-    // Print note content safely
-    std.debug.print("Note content: {s}\n", .{note_content});
-
-    //Need to take note content and add into a sql record
     const home_dir = try std.process.getEnvVarOwned(gpa, "HOME");
     defer gpa.free(home_dir);
 
@@ -313,12 +352,12 @@ fn getUserInput(gpa: std.mem.Allocator) ![]const u8 {
     const file = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
     defer file.close();
 
-    const contents = try file.readToEndAlloc(gpa, 1024); // Max 4KB input
+    const contents = try file.readToEndAlloc(gpa, 1048576);
     try std.fs.cwd().deleteFile(tmp_path);
     return contents;
 }
 
-fn getDb(gpa: std.mem.Allocator) anyerror!sqlite.Db {
+fn getDb(gpa: std.mem.Allocator) !sqlite.Db {
     const home_dir = try std.process.getEnvVarOwned(gpa, "HOME");
     defer gpa.free(home_dir);
 
@@ -338,17 +377,37 @@ fn getDb(gpa: std.mem.Allocator) anyerror!sqlite.Db {
     });
     return db;
 }
-fn queryForTagCount(tagCount: usize) []const u8 {
-    if (tagCount == 1) {
-        return "SELECT n.title, n.tags FROM notes AS n JOIN json_each(n.tags) AS tag ON tag.value IN (?) GROUP BY n.id, n.title, n.tags HAVING COUNT(DISTINCT tag.value) = 1;";
-    } else if (tagCount == 2) {
-        return "SELECT n.title, n.tags FROM notes AS n JOIN json_each(n.tags) AS tag ON tag.value IN (?, ?) GROUP BY n.id, n.title, n.tags HAVING COUNT(DISTINCT tag.value) = 2;";
-    } else if (tagCount == 3) {
-        return "SELECT n.title, n.tags FROM notes AS n JOIN json_each(n.tags) AS tag ON tag.value IN (?, ?, ?) GROUP BY n.id, n.title, n.tags HAVING COUNT(DISTINCT tag.value) = 3;";
-    } else {
-        return "SELECT n.title, n.tags FROM notes AS n JOIN json_each(n.tags) AS tag ON tag.value IN (?) GROUP BY n.id, n.title, n.tags HAVING COUNT(DISTINCT tag.value) = 1;";
+
+fn makeTagList(gpa: std.mem.Allocator, tags_ref: *const [256:0]u8) !std.ArrayList([]const u8) {
+    const tags_slice = tags_ref[0..];
+
+    const tag_length = std.mem.indexOf(u8, tags_slice, "\x00") orelse tags_slice.len;
+    const raw_tags = tags_slice[0..tag_length];
+    var tags_str = raw_tags;
+    if (tags_str.len > 0 and tags_str[0] == '[') {
+        tags_str = tags_str[1..];
     }
+    if (tags_str.len > 0 and tags_str[tags_str.len - 1] == ']') {
+        tags_str = tags_str[0 .. tags_str.len - 1];
+    }
+
+    var r_tag_list = std.ArrayList([]const u8).init(gpa);
+
+    var start: usize = 0;
+    while (start <= tags_str.len) {
+        var token_end: usize = start;
+        while (token_end < tags_str.len and tags_str[token_end] != ',') {
+            token_end += 1;
+        }
+        const token = tags_str[start..token_end];
+        const trimmed = std.mem.trim(u8, token, " \"");
+        try r_tag_list.append(trimmed);
+        if (token_end >= tags_str.len) break;
+        start = token_end + 1;
+    }
+    return r_tag_list;
 }
+
 const sqlite = @import("sqlite");
 const clap = @import("clap");
 const std = @import("std");
