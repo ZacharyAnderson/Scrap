@@ -88,11 +88,11 @@ fn editTag(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: Ma
     while (iter.next()) |arg| {
         try new_tag_list.append(arg);
     }
-    var db = try getDb(gpa);
+    var database = try db.getDb(gpa);
 
     const query = "SELECT id, tags FROM notes WHERE title = ?";
 
-    var stmt = try db.prepare(query);
+    var stmt = try database.prepare(query);
     defer stmt.deinit();
 
     const row = try stmt.one(
@@ -130,7 +130,7 @@ fn editTag(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: Ma
         \\UPDATE notes SET tags = ?  where id = ?
     ;
 
-    var update_stmt = try db.prepare(update_query);
+    var update_stmt = try database.prepare(update_query);
     defer update_stmt.deinit();
 
     try update_stmt.exec(.{}, .{ serialized_tags, note_id });
@@ -144,27 +144,11 @@ fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
     while (iter.next()) |arg| {
         try tags_list.append(arg);
     }
-    const home_dir = try std.process.getEnvVarOwned(gpa, "HOME");
-    defer gpa.free(home_dir);
-
-    const db_path_unsent = try std.fmt.allocPrint(gpa, "{s}/.scrap/scrap.db", .{home_dir});
-    defer gpa.free(db_path_unsent);
-
-    const db_path = try std.mem.concatWithSentinel(gpa, u8, &[_][]const u8{db_path_unsent}, 0);
-    defer gpa.free(db_path);
-
-    var db = try sqlite.Db.init(.{
-        .mode = sqlite.Db.Mode{ .File = db_path },
-        .open_flags = .{
-            .write = true,
-            .create = true,
-        },
-        .threading_mode = .MultiThread,
-    });
+    var database = try db.getDb(gpa);
 
     const query = "SELECT title, tags, updated_at FROM notes;";
 
-    var stmt = try db.prepare(query);
+    var stmt = try database.prepare(query);
     defer stmt.deinit();
 
     const rows = try stmt.all(
@@ -210,25 +194,9 @@ fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
         std.debug.print("Arg: {s}\n", .{arg});
         note_name = arg;
     }
-    const home_dir = try std.process.getEnvVarOwned(gpa, "HOME");
-    defer gpa.free(home_dir);
-
-    const db_path_unsent = try std.fmt.allocPrint(gpa, "{s}/.scrap/scrap.db", .{home_dir});
-    defer gpa.free(db_path_unsent);
-
-    const db_path = try std.mem.concatWithSentinel(gpa, u8, &[_][]const u8{db_path_unsent}, 0);
-    defer gpa.free(db_path);
-
-    var db = try sqlite.Db.init(.{
-        .mode = sqlite.Db.Mode{ .File = db_path },
-        .open_flags = .{
-            .write = true,
-            .create = true,
-        },
-        .threading_mode = .MultiThread,
-    });
+    var database = try db.getDb(gpa);
     const query = "SELECT id, note FROM notes WHERE title = ?";
-    var stmt = try db.prepare(query);
+    var stmt = try database.prepare(query);
     defer stmt.deinit();
 
     const row = try stmt.oneAlloc(
@@ -264,7 +232,7 @@ fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
             \\UPDATE notes SET note = ?  where id = ?
         ;
 
-        var update_stmt = try db.prepare(update_query);
+        var update_stmt = try database.prepare(update_query);
         defer update_stmt.deinit();
 
         try update_stmt.exec(.{}, .{ contents, note_id });
@@ -304,28 +272,12 @@ fn addNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: Ma
     };
     defer gpa.free(note_content);
 
-    const home_dir = try std.process.getEnvVarOwned(gpa, "HOME");
-    defer gpa.free(home_dir);
-
-    const db_path_unsent = try std.fmt.allocPrint(gpa, "{s}/.scrap/scrap.db", .{home_dir});
-    defer gpa.free(db_path_unsent);
-
-    const db_path = try std.mem.concatWithSentinel(gpa, u8, &[_][]const u8{db_path_unsent}, 0);
-    defer gpa.free(db_path);
-
-    var db = try sqlite.Db.init(.{
-        .mode = sqlite.Db.Mode{ .File = db_path },
-        .open_flags = .{
-            .write = true,
-            .create = true,
-        },
-        .threading_mode = .MultiThread,
-    });
+    var database = try db.getDb(gpa);
     const query =
         \\INSERT INTO notes(title, note, tags) VALUES(?, ?, ?)
     ;
 
-    var stmt = try db.prepare(query);
+    var stmt = try database.prepare(query);
     defer stmt.deinit();
 
     try stmt.exec(.{}, .{
@@ -355,27 +307,6 @@ fn getUserInput(gpa: std.mem.Allocator) ![]const u8 {
     const contents = try file.readToEndAlloc(gpa, 1048576);
     try std.fs.cwd().deleteFile(tmp_path);
     return contents;
-}
-
-fn getDb(gpa: std.mem.Allocator) !sqlite.Db {
-    const home_dir = try std.process.getEnvVarOwned(gpa, "HOME");
-    defer gpa.free(home_dir);
-
-    const db_path_unsent = try std.fmt.allocPrint(gpa, "{s}/.scrap/scrap.db", .{home_dir});
-    defer gpa.free(db_path_unsent);
-
-    const db_path = try std.mem.concatWithSentinel(gpa, u8, &[_][]const u8{db_path_unsent}, 0);
-    defer gpa.free(db_path);
-
-    const db = try sqlite.Db.init(.{
-        .mode = sqlite.Db.Mode{ .File = db_path },
-        .open_flags = .{
-            .write = true,
-            .create = true,
-        },
-        .threading_mode = .MultiThread,
-    });
-    return db;
 }
 
 fn makeTagList(gpa: std.mem.Allocator, tags_ref: *const [256:0]u8) !std.ArrayList([]const u8) {
@@ -408,6 +339,7 @@ fn makeTagList(gpa: std.mem.Allocator, tags_ref: *const [256:0]u8) !std.ArrayLis
     return r_tag_list;
 }
 
+const db = @import("db.zig");
 const sqlite = @import("sqlite");
 const clap = @import("clap");
 const std = @import("std");
