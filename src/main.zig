@@ -1,4 +1,3 @@
-// we should support Add, Edit, Find, View, Help P0
 const SubCommands = enum {
     add,
     delete,
@@ -12,15 +11,12 @@ const main_parsers = .{
     .command = clap.parsers.enumeration(SubCommands),
 };
 
-// The parameters for `main`. Parameters for the subcommands are specified further down.
 const main_params = clap.parseParamsComptime(
     \\-h, --help  Display this help and exit.
     \\<command>
     \\
 );
 
-// To pass around arguments returned by clap, `clap.Result` and `clap.ResultEx` can be used to
-// get the return type of `clap.parse` and `clap.parseEx`.
 const MainArgs = clap.ResultEx(clap.Help, &main_params, main_parsers);
 
 pub fn main() !void {
@@ -37,12 +33,6 @@ pub fn main() !void {
     var res = clap.parseEx(clap.Help, &main_params, main_parsers, &iter, .{
         .diagnostic = &diag,
         .allocator = gpa,
-
-        // Terminate the parsing of arguments after parsing the first positional (0 is passed
-        // here because parsed positionals are, like slices and arrays, indexed starting at 0).
-        //
-        // This will terminate the parsing after parsing the subcommand enum and leave `iter`
-        // not fully consumed. It can then be reused to parse the arguments for subcommands.
         .terminating_positional = 0,
     }) catch |err| {
         diag.report(std.io.getStdErr().writer(), err) catch {};
@@ -50,12 +40,14 @@ pub fn main() !void {
     };
     defer res.deinit();
 
-    if (res.args.help != 0)
-        std.debug.print("--help\n", .{});
+    if (res.args.help != 0) {
+        try help();
+        return;
+    }
 
     const command = res.positionals[0] orelse return error.MissingCommand;
     switch (command) {
-        .help => try help(gpa, &iter, res),
+        .help => try help(),
         .add => try addNote(gpa, &iter, res),
         .delete => try deleteNote(gpa, &iter, res),
         .find => try findNote(gpa, &iter, res),
@@ -67,73 +59,101 @@ pub fn main() !void {
 fn deleteNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
     // Need to implement delete functionality
     _ = main_args;
-    std.debug.print("Editing a note\n", .{});
-    std.debug.print("gpa allocator address: {}\n", .{gpa});
+
+    var note_name: ?[]const u8 = null;
     while (iter.next()) |arg| {
-        std.debug.print("Arg: {s}\n", .{arg});
+        note_name = arg;
     }
+
+    std.debug.print("Attempting to delete Note: {s}\n", .{note_name.?});
+    var database = try db.getDb(gpa);
+    const row = try db.getNote(gpa, &database, note_name.?);
+
+    const note_id = row.id;
+
+    try db.deleteNote(&database, note_id);
 }
 
 fn editTag(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
     _ = main_args;
     std.debug.print("Editing Tags\n", .{});
 
+    const params = comptime clap.parseParamsComptime(
+        \\-a, --add Add a tag to the note.
+        \\-d, --delete Delete a tag from the note.
+        \\-h, --help Display this help and exit.
+        \\<str>...
+        \\
+    );
+    var diag = clap.Diagnostic{};
+    var res = clap.parseEx(clap.Help, &params, clap.parsers.default, iter, .{
+        .diagnostic = &diag,
+        .allocator = gpa,
+    }) catch |err| {
+        diag.report(std.io.getStdErr().writer(), err) catch {};
+        return err;
+    };
+    defer res.deinit();
+
+    const note_inputs = res.positionals[0];
     var note_title: ?[]const u8 = null;
+    var tag_add_or_remove_flag: ?bool = null;
     var new_tag_list = std.ArrayList([]const u8).init(gpa);
     defer new_tag_list.deinit();
 
-    if (iter.next()) |arg| {
-        note_title = arg;
+    if (res.args.add != 0) {
+        std.debug.print("--add\n", .{});
+        tag_add_or_remove_flag = true;
     }
-    while (iter.next()) |arg| {
-        try new_tag_list.append(arg);
+    if (res.args.delete != 0) {
+        std.debug.print("--delete\n", .{});
+        tag_add_or_remove_flag = false;
     }
-    var database = try db.getDb(gpa);
+    if (res.args.help != 0) {
+        std.debug.print("--help!\n", .{});
+        return;
+    } else {
+        if (note_inputs.len < 2) {
+            std.debug.print("No tags provided\n", .{});
+            return;
+        } else {
+            note_title = note_inputs[0];
+            for (note_inputs[1..]) |tag| {
+                try new_tag_list.append(tag);
+            }
+        }
 
-    const query = "SELECT id, tags FROM notes WHERE title = ?";
-
-    var stmt = try database.prepare(query);
-    defer stmt.deinit();
-
-    const row = try stmt.one(
-        struct { id: i32, tags: [256:0]u8 },
-        .{},
-        .{ .title = note_title },
-    );
-    var tagSet = std.StringHashMap(void).init(gpa);
-    defer tagSet.deinit();
-    var note_id: ?i32 = null;
-    if (row) |r| {
-        note_id = r.id;
-        const tags_slice = r.tags[0..];
+        var database = try db.getDb(gpa);
+        const row = try db.getTagsAndId(gpa, &database, note_title.?);
+        var tagSet = std.StringHashMap(void).init(gpa);
+        defer tagSet.deinit();
+        var note_id: ?i32 = null;
+        note_id = row.id;
+        const tags_slice = row.tags[0..];
 
         const r_tag_list = try makeTagList(gpa, tags_slice);
         defer r_tag_list.deinit();
         for (r_tag_list.items) |tag| {
             try tagSet.put(tag, {});
         }
+        for (new_tag_list.items) |tag| {
+            if (tag_add_or_remove_flag.?) {
+                try tagSet.put(tag, {});
+            } else {
+                _ = tagSet.remove(tag);
+            }
+        }
+        var tagIter = tagSet.keyIterator();
+        var uniqueTags = std.ArrayList([]const u8).init(gpa);
+        defer uniqueTags.deinit();
+        while (tagIter.next()) |arg| {
+            try uniqueTags.append(arg.*);
+        }
+
+        const serialized_tags = try std.json.stringifyAlloc(gpa, uniqueTags.items, .{});
+        defer gpa.free(serialized_tags);
+        try db.updateTags(&database, serialized_tags, note_id.?);
     }
-    for (new_tag_list.items) |tag| {
-        try tagSet.put(tag, {});
-    }
-    var tagIter = tagSet.keyIterator();
-    var uniqueTags = std.ArrayList([]const u8).init(gpa);
-    defer uniqueTags.deinit();
-    while (tagIter.next()) |arg| {
-        try uniqueTags.append(arg.*);
-    }
-
-    const serialized_tags = try std.json.stringifyAlloc(gpa, uniqueTags.items, .{});
-    defer gpa.free(serialized_tags);
-
-    const update_query =
-        \\UPDATE notes SET tags = ?  where id = ?
-    ;
-
-    var update_stmt = try database.prepare(update_query);
-    defer update_stmt.deinit();
-
-    try update_stmt.exec(.{}, .{ serialized_tags, note_id });
 }
 
 fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
@@ -146,22 +166,13 @@ fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
     }
     var database = try db.getDb(gpa);
 
-    const query = "SELECT title, tags, updated_at FROM notes;";
-
-    var stmt = try database.prepare(query);
-    defer stmt.deinit();
-
-    const rows = try stmt.all(
-        struct { title: [128:0]u8, tags: [256:0]u8, update_at: [128:0]u8 },
-        gpa,
-        .{},
-        .{},
-    );
+    const rows = try db.getAllTitlesAndTags(gpa, &database);
     defer gpa.free(rows);
+
     for (rows) |r| {
         const name_ptr: [*:0]const u8 = &r.title;
         const tags_ptr: [*:0]const u8 = &r.tags;
-        const update_at_ptr: [*:0]const u8 = &r.update_at;
+        const update_at_ptr: [*:0]const u8 = &r.updated_at;
         const tags_slice = r.tags[0..];
 
         const r_tag_list = try makeTagList(gpa, tags_slice);
@@ -191,28 +202,17 @@ fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
     const tmp_path = "/tmp/scrap_note.md";
     var note_name: ?[]const u8 = null;
     while (iter.next()) |arg| {
-        std.debug.print("Arg: {s}\n", .{arg});
         note_name = arg;
     }
     var database = try db.getDb(gpa);
-    const query = "SELECT id, note FROM notes WHERE title = ?";
-    var stmt = try database.prepare(query);
-    defer stmt.deinit();
+    const row = try db.getNote(gpa, &database, note_name.?);
 
-    const row = try stmt.oneAlloc(
-        struct { id: i32, note: []const u8 },
-        gpa,
-        .{},
-        .{ .title = note_name },
-    );
-    var note_id: ?i32 = null;
-    if (row) |r| {
-        note_id = r.id;
-        defer gpa.free(r.note);
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true, .read = true });
-        defer file.close();
-        try file.writeAll(r.note);
-    }
+    const note_id = row.id;
+    const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true, .read = true });
+    defer file.close();
+
+    const note_length = std.mem.indexOfScalar(u8, &row.note, 0) orelse row.note.len;
+    try file.writeAll(row.note[0..note_length]);
     const original_file = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
     const original_note_content = try original_file.readToEndAlloc(gpa, 1048576);
     defer gpa.free(original_note_content);
@@ -224,28 +224,34 @@ fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
         std.debug.print("Failed to launch editor: {s}, error: {}\n", .{ editor, err });
         return err;
     }
-    const file = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
-    const contents = try file.readToEndAlloc(gpa, 1048576);
+    const file_read_only = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
+    const contents = try file_read_only.readToEndAlloc(gpa, 1048576);
     defer gpa.free(contents);
     if (!std.mem.eql(u8, contents, original_note_content)) {
-        const update_query =
-            \\UPDATE notes SET note = ?  where id = ?
-        ;
-
-        var update_stmt = try database.prepare(update_query);
-        defer update_stmt.deinit();
-
-        try update_stmt.exec(.{}, .{ contents, note_id });
+        try db.updateNote(&database, contents, note_id);
     }
     try std.fs.cwd().deleteFile(tmp_path);
 }
-fn help(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
-    _ = main_args;
-    std.debug.print("Help!\n", .{});
-    std.debug.print("gpa allocator address: {}\n", .{gpa});
-    while (iter.next()) |arg| {
-        std.debug.print("Arg: {s}\n", .{arg});
-    }
+fn help() !void {
+
+    // add,
+    // delete,
+    // find,
+    // open,
+    // editTag,
+    // help,
+    var cli_writer = std.io.getStdOut().writer();
+    try cli_writer.print("**************************************************************************\n", .{});
+    try cli_writer.print("==========================================================================\n", .{});
+    try cli_writer.print("Scrap Commands \n", .{});
+    try cli_writer.print("==========================================================================\n", .{});
+    try cli_writer.print("add     - Adds a new Note ex. `scrap add note_name tag_1 tag_2`\n", .{});
+    try cli_writer.print("delete  - Deletes a note ex. `scrap delete note_name`\n", .{});
+    try cli_writer.print("find    - Finds notes with matching tags ex. `scrap find tag_1 tag_2`\n", .{});
+    try cli_writer.print("open    - Opens note and saves note if modified ex. `scrap open note_name`\n", .{});
+    try cli_writer.print("editTag - Edits tags on said file ex. `scrap editTag -a note_name tag_3`\n", .{});
+    try cli_writer.print("help    - Shows available commands ex. `scrap help`\n", .{});
+    try cli_writer.print("**************************************************************************\n", .{});
 }
 
 fn addNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
@@ -256,11 +262,9 @@ fn addNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: Ma
     var json_list = std.ArrayList([]const u8).init(gpa);
     defer json_list.deinit();
     if (iter.next()) |arg| {
-        std.debug.print("Arg: {s}\n", .{arg});
         note_name = arg;
     }
     while (iter.next()) |arg| {
-        std.debug.print("Arg: {s}\n", .{arg});
         try json_list.append(arg);
     }
     const serialized_tags = try std.json.stringifyAlloc(gpa, json_list.items, .{});
@@ -273,18 +277,7 @@ fn addNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: Ma
     defer gpa.free(note_content);
 
     var database = try db.getDb(gpa);
-    const query =
-        \\INSERT INTO notes(title, note, tags) VALUES(?, ?, ?)
-    ;
-
-    var stmt = try database.prepare(query);
-    defer stmt.deinit();
-
-    try stmt.exec(.{}, .{
-        .title = note_name,
-        .note = note_content,
-        .tags = serialized_tags,
-    });
+    try db.insertNote(&database, note_name.?, note_content, serialized_tags);
 }
 
 fn getUserInput(gpa: std.mem.Allocator) ![]const u8 {
@@ -343,5 +336,4 @@ const db = @import("db.zig");
 const sqlite = @import("sqlite");
 const clap = @import("clap");
 const std = @import("std");
-/// This imports the separate module containing `root.zig`. Take a look in `build.zig` for details.
 const lib = @import("scrap_lib");
