@@ -7,10 +7,9 @@ pub const Note = struct {
     note: [16000:0]u8,
     tags: [256:0]u8,
     updated_at: [128:0]u8,
-    created_at: [128:0]u8, // Another extra field
+    created_at: [128:0]u8,
 };
 
-// A smaller struct that matches the specific query result
 pub const NoteMetadata = struct {
     title: [128:0]u8,
     tags: [256:0]u8,
