@@ -124,6 +124,7 @@ fn editTag(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: Ma
         }
 
         var database = try db.getDb(gpa);
+        defer database.deinit();
         const row = try db.getTagsAndId(gpa, &database, note_title.?);
         var tagSet = std.StringHashMap(void).init(gpa);
         defer tagSet.deinit();
@@ -165,6 +166,7 @@ fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
         try tags_list.append(arg);
     }
     var database = try db.getDb(gpa);
+    defer database.deinit();
 
     const rows = try db.getAllTitlesAndTags(gpa, &database);
     defer gpa.free(rows);
@@ -199,12 +201,14 @@ fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
 fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: MainArgs) !void {
     _ = main_args;
 
+    // lets change temp path to ~/.scrap/tmp/noteName_ts
     const tmp_path = "/tmp/scrap_note.md";
     var note_name: ?[]const u8 = null;
     while (iter.next()) |arg| {
         note_name = arg;
     }
     var database = try db.getDb(gpa);
+    defer database.deinit();
     const row = try db.getNote(gpa, &database, note_name.?);
 
     const note_id = row.id;
@@ -230,7 +234,6 @@ fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: M
     if (!std.mem.eql(u8, contents, original_note_content)) {
         try db.updateNote(&database, contents, note_id);
     }
-    try std.fs.cwd().deleteFile(tmp_path);
 }
 fn help() !void {
 
@@ -270,7 +273,7 @@ fn addNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: Ma
     const serialized_tags = try std.json.stringifyAlloc(gpa, json_list.items, .{});
     defer gpa.free(serialized_tags);
     std.debug.print("Note Name: {?s}, Note Tags: {s}\n", .{ note_name, serialized_tags });
-    const note_content = getUserInput(gpa) catch |err| {
+    const note_content = getUserInput(gpa, note_name.?) catch |err| {
         std.debug.print("Error getting user input: {}\n", .{err});
         return err;
     };
@@ -280,8 +283,14 @@ fn addNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: Ma
     try db.insertNote(&database, note_name.?, note_content, serialized_tags);
 }
 
-fn getUserInput(gpa: std.mem.Allocator) ![]const u8 {
-    const tmp_path = "/tmp/scrap_note.md";
+fn getUserInput(gpa: std.mem.Allocator, note_name: []const u8) ![]const u8 {
+    const tmp_path_base = "~/.scrap/temp/";
+    const epoch_ts = std.time.milliTimestamp();
+
+    const tmp_path = try std.fmt.allocPrint(gpa, "{s}{s}{d}.md", .{ tmp_path_base, note_name, epoch_ts });
+    defer gpa.free(tmp_path);
+
+    try std.fs.cwd().makePath(tmp_path_base);
 
     const editor = std.process.getEnvVarOwned(gpa, "EDITOR") catch "/opt/homebrew/bin/nvim";
 
@@ -297,8 +306,9 @@ fn getUserInput(gpa: std.mem.Allocator) ![]const u8 {
     const file = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
     defer file.close();
 
-    const contents = try file.readToEndAlloc(gpa, 1048576);
-    try std.fs.cwd().deleteFile(tmp_path);
+    const file_size = try file.getEndPos();
+    const contents = try file.readToEndAlloc(gpa, file_size);
+    // const contents = try file.readToEndAlloc(gpa, 1048576);
     return contents;
 }
 

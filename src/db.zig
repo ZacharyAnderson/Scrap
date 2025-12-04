@@ -132,7 +132,7 @@ pub fn deleteNote(database: *sqlite.Db, id: i32) !void {
     try update_stmt.exec(.{}, .{id});
 }
 
-pub fn insertNote(database: *sqlite.Db, note_name: []const u8, note_content: []const u8, tags: []u8) !void {
+pub fn insertNote(database: *sqlite.Db, note_name: []const u8, note_content: []const u8, tags: []const u8) !void {
     const query =
         \\INSERT INTO notes(title, note, tags) VALUES(?, ?, ?)
     ;
