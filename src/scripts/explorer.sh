@@ -17,14 +17,24 @@ if [[ ! -f "$SCRAP_BIN" ]]; then
     exit 1
 fi
 
+# Check if a search query was provided as an argument
+SEARCH_QUERY="$1"
+FZF_ARGS=""
+
+if [[ -n "$SEARCH_QUERY" ]]; then
+    FZF_ARGS="--query=$SEARCH_QUERY"
+fi
+
 # Select a note from the database and preview its content
 SELECTED_NOTE=$(sqlite3 -separator $'\t' "$DB_FILE" "SELECT title, tags FROM notes ORDER BY updated_at DESC;" | \
     fzf --delimiter=$'\t' \
         --with-nth=1,2 \
         --prompt="Select a note: " \
-        --preview="sqlite3 \"$DB_FILE\" \"SELECT note FROM notes WHERE title = {1} LIMIT 1;\" | glow -" \
+        --preview="sqlite3 \"$DB_FILE\" \"SELECT note FROM notes WHERE title = {1} LIMIT 1;\" | bat --style=plain --language=markdown --color=always -" \
         --preview-window="right:60%:wrap" \
-        --header="Title | Tags"
+        --header="Title | Tags" \
+        --height=100% \
+        $FZF_ARGS
 )
 
 if [[ -n "$SELECTED_NOTE" ]]; then
