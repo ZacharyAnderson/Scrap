@@ -6,16 +6,16 @@ class Scrap < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/zachanderson/scrap/releases/download/v1.0.0/scrap-macos-arm64.tar.gz"
-      sha256 "REPLACE_WITH_ARM64_SHA256"
+      sha256 "5b795abac4f1c51790505b4711b6ca705340ec385121fdf60b6701e0ef30f4e8"
     else
       url "https://github.com/zachanderson/scrap/releases/download/v1.0.0/scrap-macos-x86_64.tar.gz"
-      sha256 "REPLACE_WITH_X86_64_SHA256"
+      sha256 "e1ff62f3228fe728ee09912792e85ce2a42b0c906e528b1ad58a88add03e402c"
     end
   end
 
   on_linux do
     url "https://github.com/zachanderson/scrap/releases/download/v1.0.0/scrap-linux-x86_64.tar.gz"
-    sha256 "REPLACE_WITH_LINUX_SHA256"
+    sha256 "9cc274cb7ff6b9088843cc64765f14166fec305aeca318cae78f1f1829d4878f"
   end
 
   license "MIT"
