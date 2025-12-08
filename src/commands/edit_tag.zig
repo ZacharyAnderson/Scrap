@@ -43,8 +43,12 @@ pub fn editTag(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args
         std.debug.print("--help!\n", .{});
         return;
     } else {
+        if (note_inputs.len == 0) {
+            std.debug.print("Error: No note name provided\n", .{});
+            return;
+        }
         if (note_inputs.len < 2) {
-            std.debug.print("No tags provided\n", .{});
+            std.debug.print("Error: No tags provided\n", .{});
             return;
         } else {
             note_title = note_inputs[0];
@@ -53,9 +57,23 @@ pub fn editTag(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args
             }
         }
 
+        if (tag_add_or_remove_flag == null) {
+            std.debug.print("Error: Must specify --add or --delete flag\n", .{});
+            return;
+        }
+
         var database = try db.getDb(gpa);
         defer database.deinit();
-        const row = try db.getTagsAndId(gpa, &database, note_title.?);
+        
+        const row = db.getTagsAndId(gpa, &database, note_title.?) catch |err| {
+            switch (err) {
+                error.NoteNotFound => {
+                    std.debug.print("Note '{s}' does not exist\n", .{note_title.?});
+                    return;
+                },
+                else => return err,
+            }
+        };
         var tagSet = std.StringHashMap(void).init(gpa);
         defer tagSet.deinit();
         var note_id: ?i32 = null;
@@ -84,5 +102,8 @@ pub fn editTag(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args
         const serialized_tags = try std.json.stringifyAlloc(gpa, uniqueTags.items, .{});
         defer gpa.free(serialized_tags);
         try db.updateTags(&database, serialized_tags, note_id.?);
+        
+        const action = if (tag_add_or_remove_flag.?) "added to" else "removed from";
+        std.debug.print("Tags successfully {s} note '{s}'\n", .{ action, note_title.? });
     }
 }
