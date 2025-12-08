@@ -2,7 +2,7 @@
 
 # Get the directory of this script and find the scrap binary
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRAP_BIN="$SCRIPT_DIR/../../zig-out/bin/scrap"
+SCRAP_BIN="$SCRIPT_DIR/../../bin/scrap"
 
 DB_FILE=$HOME/.scrap/scrap.db
 
