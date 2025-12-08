@@ -21,7 +21,8 @@ pub fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_arg
     const note_length = std.mem.indexOfScalar(u8, &row.note, 0) orelse row.note.len;
     try file.writeAll(row.note[0..note_length]);
     const original_file = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
-    const original_note_content = try original_file.readToEndAlloc(gpa, 1048576);
+    const file_size = try original_file.getEndPos();
+    const original_note_content = try original_file.readToEndAlloc(gpa, file_size);
     defer gpa.free(original_note_content);
 
     const editor = std.process.getEnvVarOwned(gpa, "EDITOR") catch "/opt/homebrew/bin/nvim";
@@ -32,9 +33,11 @@ pub fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_arg
         return err;
     }
     const file_read_only = try std.fs.cwd().openFile(tmp_path, .{ .mode = .read_only });
-    const contents = try file_read_only.readToEndAlloc(gpa, 1048576);
+    const updated_file_size = try file_read_only.getEndPos();
+    const contents = try file_read_only.readToEndAlloc(gpa, updated_file_size);
     defer gpa.free(contents);
     if (!std.mem.eql(u8, contents, original_note_content)) {
         try db.updateNote(&database, contents, note_id);
     }
 }
+
