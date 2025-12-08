@@ -5,7 +5,6 @@ const db = @import("../db.zig");
 pub fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: types.MainArgs) !void {
     _ = main_args;
 
-    const tmp_path = "/tmp/scrap_note.md";
     var note_name: ?[]const u8 = null;
     while (iter.next()) |arg| {
         note_name = arg;
@@ -13,6 +12,16 @@ pub fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_arg
     var database = try db.getDb(gpa);
     defer database.deinit();
     const row = try db.getNote(gpa, &database, note_name.?);
+
+    const home_dir = std.process.getEnvVarOwned(gpa, "HOME") catch return error.NoHomeDir;
+    defer gpa.free(home_dir);
+    const tmp_path_base = try std.fs.path.join(gpa, &[_][]const u8{ home_dir, ".scrap", "temp/" });
+    defer gpa.free(tmp_path_base);
+    const epoch_ts = std.time.milliTimestamp();
+    const tmp_path = try std.fmt.allocPrint(gpa, "{s}{s}_{d}.md", .{ tmp_path_base, note_name.?, epoch_ts });
+    defer gpa.free(tmp_path);
+
+    try std.fs.cwd().makePath(tmp_path_base);
 
     const note_id = row.id;
     const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true, .read = true });
@@ -40,4 +49,3 @@ pub fn openNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_arg
         try db.updateNote(&database, contents, note_id);
     }
 }
-
