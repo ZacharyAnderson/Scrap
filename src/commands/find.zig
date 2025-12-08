@@ -20,7 +20,7 @@ pub fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_arg
             std.debug.print("Failed to get executable directory\n", .{});
             return;
         };
-        script_path = try std.fmt.allocPrint(gpa, "{s}/../../src/scripts/explorer.sh", .{exe_dir});
+        script_path = try std.fmt.allocPrint(gpa, "{s}/../libexec/scripts/explorer.sh", .{exe_dir});
         script_owned = true;
     }
     defer if (script_owned) gpa.free(script_path);
