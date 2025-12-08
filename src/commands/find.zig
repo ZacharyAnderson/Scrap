@@ -4,15 +4,26 @@ const types = @import("../types.zig");
 pub fn findNote(gpa: std.mem.Allocator, iter: *std.process.ArgIterator, main_args: types.MainArgs) !void {
     _ = main_args;
 
-    // Get the path to the explorer script relative to this executable
-    var exe_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_dir = std.fs.selfExeDirPath(&exe_dir_buf) catch {
-        std.debug.print("Failed to get executable directory\n", .{});
-        return;
-    };
-
-    const script_path = try std.fmt.allocPrint(gpa, "{s}/../../src/scripts/explorer.sh", .{exe_dir});
-    defer gpa.free(script_path);
+    // Try multiple paths for the explorer script
+    var script_path: []const u8 = undefined;
+    var script_owned = false;
+    
+    // First try environment variable (for Homebrew installation)
+    if (std.process.getEnvVarOwned(gpa, "SCRAP_SCRIPTS_PATH")) |scripts_dir| {
+        script_path = try std.fmt.allocPrint(gpa, "{s}/explorer.sh", .{scripts_dir});
+        script_owned = true;
+        gpa.free(scripts_dir);
+    } else |_| {
+        // Fallback to relative path (development)
+        var exe_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const exe_dir = std.fs.selfExeDirPath(&exe_dir_buf) catch {
+            std.debug.print("Failed to get executable directory\n", .{});
+            return;
+        };
+        script_path = try std.fmt.allocPrint(gpa, "{s}/../../src/scripts/explorer.sh", .{exe_dir});
+        script_owned = true;
+    }
+    defer if (script_owned) gpa.free(script_path);
 
     // Collect any search arguments
     var args_list = std.ArrayList([]const u8).init(gpa);
