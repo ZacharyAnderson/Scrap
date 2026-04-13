@@ -5,6 +5,7 @@ const delete = @import("commands/delete.zig");
 const find = @import("commands/find.zig");
 const open = @import("commands/open.zig");
 const edit_tag = @import("commands/edit_tag.zig");
+const todo_cmd = @import("commands/todo.zig");
 
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
@@ -47,6 +48,7 @@ pub fn main() !void {
         .find => try find.findNote(gpa, &iter, res),
         .open => try open.openNote(gpa, &iter, res),
         .editTag => try edit_tag.editTag(gpa, &iter, res),
+        .todo => try todo_cmd.todo(gpa, &iter, res),
     }
 }
 

@@ -194,13 +194,15 @@ pub fn getTodo(gpa: std.mem.Allocator, database: *sqlite.Db, todo_title: []const
 }
 
 pub fn listTodos(gpa: std.mem.Allocator, database: *sqlite.Db, include_done: bool) ![]TodoRow {
-    const query_open = "SELECT id, title, status, priority, tags, notify_at FROM todos WHERE status = 'open' ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'med' THEN 2 WHEN 'low' THEN 3 END, created_at";
-    const query_all = "SELECT id, title, status, priority, tags, notify_at FROM todos ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'med' THEN 2 WHEN 'low' THEN 3 END, created_at";
-    const query = if (include_done) query_all else query_open;
-    var stmt = try database.prepare(query);
-    defer stmt.deinit();
-    const rows = try stmt.all(TodoRow, gpa, .{}, .{});
-    return rows;
+    if (include_done) {
+        var stmt = try database.prepare("SELECT id, title, status, priority, tags, notify_at FROM todos ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'med' THEN 2 WHEN 'low' THEN 3 END, created_at");
+        defer stmt.deinit();
+        return try stmt.all(TodoRow, gpa, .{}, .{});
+    } else {
+        var stmt = try database.prepare("SELECT id, title, status, priority, tags, notify_at FROM todos WHERE status = 'open' ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'med' THEN 2 WHEN 'low' THEN 3 END, created_at");
+        defer stmt.deinit();
+        return try stmt.all(TodoRow, gpa, .{}, .{});
+    }
 }
 
 pub fn updateTodoStatus(database: *sqlite.Db, status: []const u8, id: i32) !void {

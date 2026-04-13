@@ -6,6 +6,7 @@ pub const SubCommands = enum {
     find,
     open,
     editTag,
+    todo,
     help,
 };
 
