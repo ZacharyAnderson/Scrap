@@ -139,7 +139,7 @@ pub fn formatTimestamp(gpa: std.mem.Allocator, epoch: i64) ![]const u8 {
 
     return try std.fmt.allocPrint(gpa, "{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}", .{
         yd.year,
-        @as(u16, @intFromEnum(md.month)) + 1,
+        @as(u16, @intFromEnum(md.month)),
         @as(u16, md.day_index) + 1,
         ds.getHoursIntoDay(),
         ds.getMinutesIntoHour(),
