@@ -60,3 +60,118 @@ pub fn makeTagList(gpa: std.mem.Allocator, tags_ref: *const [256:0]u8) !std.Arra
     }
     return r_tag_list;
 }
+
+pub fn parseNotifyTime(input: []const u8) !i64 {
+    const now = std.time.timestamp();
+
+    // Try relative duration: 30m, 2h, 1d
+    if (input.len >= 2) {
+        const last_char = input[input.len - 1];
+        if (last_char == 'm' or last_char == 'h' or last_char == 'd') {
+            const num_str = input[0 .. input.len - 1];
+            const num = std.fmt.parseInt(i64, num_str, 10) catch return error.InvalidNotifyTime;
+            const seconds: i64 = switch (last_char) {
+                'm' => num * 60,
+                'h' => num * 3600,
+                'd' => num * 86400,
+                else => unreachable,
+            };
+            return now + seconds;
+        }
+    }
+
+    // Try absolute time: "9:00am", "14:30", "9:00pm"
+    return parseAbsoluteTime(input, now);
+}
+
+fn parseAbsoluteTime(input: []const u8, now: i64) !i64 {
+    var hour: i64 = 0;
+    var minute: i64 = 0;
+    var is_pm = false;
+    var is_12h = false;
+
+    // Strip am/pm suffix
+    var time_str = input;
+    if (std.mem.endsWith(u8, input, "am")) {
+        time_str = input[0 .. input.len - 2];
+        is_12h = true;
+    } else if (std.mem.endsWith(u8, input, "pm")) {
+        time_str = input[0 .. input.len - 2];
+        is_pm = true;
+        is_12h = true;
+    }
+
+    // Parse HH:MM
+    if (std.mem.indexOf(u8, time_str, ":")) |colon_pos| {
+        hour = std.fmt.parseInt(i64, time_str[0..colon_pos], 10) catch return error.InvalidNotifyTime;
+        minute = std.fmt.parseInt(i64, time_str[colon_pos + 1 ..], 10) catch return error.InvalidNotifyTime;
+    } else {
+        // Just an hour like "9am"
+        hour = std.fmt.parseInt(i64, time_str, 10) catch return error.InvalidNotifyTime;
+    }
+
+    if (is_12h) {
+        if (is_pm and hour != 12) hour += 12;
+        if (!is_pm and hour == 12) hour = 0;
+    }
+
+    if (hour < 0 or hour > 23 or minute < 0 or minute > 59) return error.InvalidNotifyTime;
+
+    // Calculate target timestamp: get today's start, add hours+minutes
+    const secs_into_day = @mod(now, 86400);
+    const today_start = now - secs_into_day;
+    var target = today_start + (hour * 3600) + (minute * 60);
+
+    // If the time has already passed today, schedule for tomorrow
+    if (target <= now) {
+        target += 86400;
+    }
+
+    return target;
+}
+
+pub fn formatTimestamp(gpa: std.mem.Allocator, epoch: i64) ![]const u8 {
+    const es = std.time.epoch.EpochSeconds{ .secs = @intCast(epoch) };
+    const ed = es.getEpochDay();
+    const yd = ed.calculateYearDay();
+    const md = yd.calculateMonthDay();
+    const ds = es.getDaySeconds();
+
+    return try std.fmt.allocPrint(gpa, "{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}", .{
+        yd.year,
+        @as(u16, @intFromEnum(md.month)) + 1,
+        @as(u16, md.day_index) + 1,
+        ds.getHoursIntoDay(),
+        ds.getMinutesIntoHour(),
+        ds.getSecondsIntoMinute(),
+    });
+}
+
+test "parseNotifyTime relative minutes" {
+    const before = std.time.timestamp();
+    const result = try parseNotifyTime("30m");
+    const after = std.time.timestamp();
+    try std.testing.expect(result >= before + 1800);
+    try std.testing.expect(result <= after + 1800);
+}
+
+test "parseNotifyTime relative hours" {
+    const before = std.time.timestamp();
+    const result = try parseNotifyTime("2h");
+    const after = std.time.timestamp();
+    try std.testing.expect(result >= before + 7200);
+    try std.testing.expect(result <= after + 7200);
+}
+
+test "parseNotifyTime relative days" {
+    const before = std.time.timestamp();
+    const result = try parseNotifyTime("1d");
+    const after = std.time.timestamp();
+    try std.testing.expect(result >= before + 86400);
+    try std.testing.expect(result <= after + 86400);
+}
+
+test "parseNotifyTime invalid input" {
+    const result = parseNotifyTime("abc");
+    try std.testing.expectError(error.InvalidNotifyTime, result);
+}
