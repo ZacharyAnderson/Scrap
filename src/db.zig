@@ -26,6 +26,26 @@ pub const NoteTags = struct {
     tags: [256:0]u8,
 };
 
+pub const Todo = struct {
+    id: i32,
+    title: [128:0]u8,
+    status: [16:0]u8,
+    priority: [16:0]u8,
+    tags: [256:0]u8,
+    notify_at: [128:0]u8,
+    created_at: [128:0]u8,
+    updated_at: [128:0]u8,
+};
+
+pub const TodoRow = struct {
+    id: i32,
+    title: [128:0]u8,
+    status: [16:0]u8,
+    priority: [16:0]u8,
+    tags: [256:0]u8,
+    notify_at: [128:0]u8,
+};
+
 pub fn getDb(gpa: std.mem.Allocator) !sqlite.Db {
     const home_dir = try std.process.getEnvVarOwned(gpa, "HOME");
     defer gpa.free(home_dir);
@@ -145,4 +165,82 @@ pub fn insertNote(database: *sqlite.Db, note_name: []const u8, note_content: []c
         .note = note_content,
         .tags = tags,
     });
+}
+
+pub fn insertTodo(database: *sqlite.Db, title: []const u8, priority: []const u8, tags: []const u8, notify_at: ?[]const u8) !void {
+    const query =
+        \\INSERT INTO todos(title, priority, tags, notify_at) VALUES(?, ?, ?, ?)
+    ;
+    var stmt = try database.prepare(query);
+    defer stmt.deinit();
+    try stmt.exec(.{}, .{
+        .title = title,
+        .priority = priority,
+        .tags = tags,
+        .notify_at = notify_at,
+    });
+}
+
+pub fn getTodo(gpa: std.mem.Allocator, database: *sqlite.Db, todo_title: []const u8) !TodoRow {
+    const query = "SELECT id, title, status, priority, tags, notify_at FROM todos WHERE title = ?";
+    var stmt = try database.prepare(query);
+    defer stmt.deinit();
+    const row = try stmt.oneAlloc(TodoRow, gpa, .{}, .{ .title = todo_title });
+    if (row) |todo| {
+        return todo;
+    } else {
+        return error.TodoNotFound;
+    }
+}
+
+pub fn listTodos(gpa: std.mem.Allocator, database: *sqlite.Db, include_done: bool) ![]TodoRow {
+    const query_open = "SELECT id, title, status, priority, tags, notify_at FROM todos WHERE status = 'open' ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'med' THEN 2 WHEN 'low' THEN 3 END, created_at";
+    const query_all = "SELECT id, title, status, priority, tags, notify_at FROM todos ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'med' THEN 2 WHEN 'low' THEN 3 END, created_at";
+    const query = if (include_done) query_all else query_open;
+    var stmt = try database.prepare(query);
+    defer stmt.deinit();
+    const rows = try stmt.all(TodoRow, gpa, .{}, .{});
+    return rows;
+}
+
+pub fn updateTodoStatus(database: *sqlite.Db, status: []const u8, id: i32) !void {
+    const query = "UPDATE todos SET status = ? WHERE id = ?";
+    var stmt = try database.prepare(query);
+    defer stmt.deinit();
+    try stmt.exec(.{}, .{ status, id });
+}
+
+pub fn updateTodoTitle(database: *sqlite.Db, title: []const u8, id: i32) !void {
+    const query = "UPDATE todos SET title = ? WHERE id = ?";
+    var stmt = try database.prepare(query);
+    defer stmt.deinit();
+    try stmt.exec(.{}, .{ title, id });
+}
+
+pub fn updateTodoPriority(database: *sqlite.Db, priority: []const u8, id: i32) !void {
+    const query = "UPDATE todos SET priority = ? WHERE id = ?";
+    var stmt = try database.prepare(query);
+    defer stmt.deinit();
+    try stmt.exec(.{}, .{ priority, id });
+}
+
+pub fn updateTodoTags(database: *sqlite.Db, tags: []const u8, id: i32) !void {
+    const query = "UPDATE todos SET tags = ? WHERE id = ?";
+    var stmt = try database.prepare(query);
+    defer stmt.deinit();
+    try stmt.exec(.{}, .{ tags, id });
+}
+
+pub fn updateTodoNotify(database: *sqlite.Db, notify_at: ?[]const u8, id: i32) !void {
+    const query = "UPDATE todos SET notify_at = ? WHERE id = ?";
+    var stmt = try database.prepare(query);
+    defer stmt.deinit();
+    try stmt.exec(.{}, .{ notify_at, id });
+}
+
+pub fn deleteTodo(database: *sqlite.Db, id: i32) !void {
+    const query = "DELETE FROM todos WHERE id = ?";
+    var stmt = try database.prepare(query);
+    defer stmt.deinit();
+    try stmt.exec(.{}, .{id});
 }
