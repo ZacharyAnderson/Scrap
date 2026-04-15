@@ -1,7 +1,6 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRAP_BIN="$SCRIPT_DIR/../../bin/scrap"
 DB_FILE=$HOME/.scrap/scrap.db
 
 if [[ ! -f "$DB_FILE" ]]; then
@@ -9,8 +8,15 @@ if [[ ! -f "$DB_FILE" ]]; then
     exit 1
 fi
 
-if [[ ! -f "$SCRAP_BIN" ]]; then
-    echo "Scrap binary not found: $SCRAP_BIN"
+# Find scrap binary: installed path, then zig-out dev path, then PATH
+if [[ -f "$SCRIPT_DIR/../../bin/scrap" ]]; then
+    SCRAP_BIN="$SCRIPT_DIR/../../bin/scrap"
+elif [[ -f "$SCRIPT_DIR/../../zig-out/bin/scrap" ]]; then
+    SCRAP_BIN="$SCRIPT_DIR/../../zig-out/bin/scrap"
+elif command -v scrap &>/dev/null; then
+    SCRAP_BIN="$(command -v scrap)"
+else
+    echo "Scrap binary not found"
     exit 1
 fi
 
